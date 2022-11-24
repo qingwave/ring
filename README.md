@@ -1,6 +1,6 @@
 # Ring
 
-Ring is the ping but with Rust, rust + ping -> ring, implement by `pnet` and `socket2`.
+Ring is the ping but with Rust, rust + ping -> ring, implement by `pnet`, `socket2` and `signal-hook`.
 
 ## Build
 
@@ -28,11 +28,25 @@ Options:
 
 ping a ip address.
 
-```
+```bash
 cargo run 8.8.8.8
 ```
 
 ping a domain
-```
+```bash
 cargo run www.github.com
+```
+
+ping and interrupt by Crtl+C
+```bash
+cargo run 8.8.8.8 -c 10
+
+PING 8.8.8.8(8.8.8.8)
+64 bytes from 8.8.8.8: icmp_seq=1 ttl=64 time=4.32ms
+64 bytes from 8.8.8.8: icmp_seq=2 ttl=64 time=3.02ms
+64 bytes from 8.8.8.8: icmp_seq=3 ttl=64 time=3.24ms
+^CReceive signal 2
+
+--- 8.8.8.8 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2365.104ms
 ```

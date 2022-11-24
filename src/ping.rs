@@ -1,4 +1,5 @@
 use std::net::{self, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,10 +9,14 @@ use pnet::packet::icmp::echo_request::{IcmpCodes, MutableEchoRequestPacket};
 use pnet::packet::icmp::IcmpTypes;
 use pnet::packet::{util, MutablePacket, Packet};
 
-use crate::config::Config;
-use crate::error::RingError;
+use signal_hook::consts::{SIGINT, SIGTERM};
 
 use socket2::{Domain, Protocol, Socket, Type};
+
+use crossbeam_channel::{self, bounded, select, Receiver};
+
+use crate::config::Config;
+use crate::error::RingError;
 
 #[derive(Clone)]
 pub struct Pinger {
@@ -37,41 +42,70 @@ impl Pinger {
     }
 
     pub fn run(&self) -> std::io::Result<()> {
-        println!("PING {}({})", self.config.destination.raw, self.config.destination.ip);
+        println!(
+            "PING {}({})",
+            self.config.destination.raw, self.config.destination.ip
+        );
         let now = Instant::now();
-        let mut send: u64 = 0;
-        let mut success: u64 = 0;
-        let this = Arc::new(self.clone());
-        let mut handles = Vec::new();
-        for i in 0..self.config.count {
-            let this = this.clone();
-            handles.push(std::thread::spawn(move || {
-                this.ping(i)
-            }));
-            
-            send += 1;
-            if i < self.config.count - 1 {
-                thread::sleep(Duration::from_millis(self.config.interval));
-            }
-        }
 
-        for handle in handles {
-            if let Some(res) = handle.join().ok() {
-                if res.is_ok() {
-                    success += 1;
+        let send = Arc::new(AtomicU64::new(0));
+        let _send = send.clone();
+        let this = Arc::new(self.clone());
+        let (sx, rx) = bounded(this.config.count as usize);
+        thread::spawn(move || {
+            for i in 0..this.config.count {
+                let _this = this.clone();
+                sx.send(thread::spawn(move || _this.ping(i))).unwrap();
+
+                _send.fetch_add(1, Ordering::SeqCst);
+
+                if i < this.config.count - 1 {
+                    thread::sleep(Duration::from_millis(this.config.interval));
                 }
             }
-        }
+            drop(sx);
+        });
+
+        let success = Arc::new(AtomicU64::new(0));
+        let _success = success.clone();
+        let (summary_s, summary_r) = bounded(1);
+        thread::spawn(move || {
+            for handle in rx.iter() {
+                if let Some(res) = handle.join().ok() {
+                    if res.is_ok() {
+                        _success.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            summary_s.send(()).unwrap();
+        });
+
+        let stop = signal_notify()?;
+        select!(
+            recv(stop) -> sig => {
+                if let Some(s) = sig.ok() {
+                    println!("Receive signal {:?}", s);
+                }
+            },
+            recv(summary_r) -> summary => {
+                if let Some(e) = summary.err() {
+                    println!("Error on summary: {}", e);
+                }
+            },
+        );
 
         let total = now.elapsed().as_micros() as f64 / 1000.0;
-        let loss_rate = if send > 0 {(send - success) * 100 / send} else {0};
+        let send = send.load(Ordering::SeqCst);
+        let success = success.load(Ordering::SeqCst);
+        let loss_rate = if send > 0 {
+            (send - success) * 100 / send
+        } else {
+            0
+        };
         println!("\n--- {} ping statistics ---", self.config.destination.raw);
         println!(
             "{} packets transmitted, {} received, {}% packet loss, time {}ms",
-            send,
-            success,
-            loss_rate,
-            total,
+            send, success, loss_rate, total,
         );
         Ok(())
     }
@@ -79,8 +113,8 @@ impl Pinger {
     pub fn ping(&self, seq_offset: u16) -> anyhow::Result<()> {
         // create icmp request packet
         let mut buf = vec![0; self.config.packet_size];
-        let mut icmp = MutableEchoRequestPacket::new(&mut buf[..])
-            .ok_or(RingError::InvalidBufferSize)?;
+        let mut icmp =
+            MutableEchoRequestPacket::new(&mut buf[..]).ok_or(RingError::InvalidBufferSize)?;
         icmp.set_icmp_type(IcmpTypes::EchoRequest);
         icmp.set_icmp_code(IcmpCodes::NoCode);
         icmp.set_sequence_number(self.config.sequence + seq_offset);
@@ -93,7 +127,8 @@ impl Pinger {
         self.socket.send_to(icmp.packet_mut(), &self.dest.into())?;
 
         // handle recv
-        let mut mem_buf = unsafe { &mut *(buf.as_mut_slice() as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+        let mut mem_buf =
+            unsafe { &mut *(buf.as_mut_slice() as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
         let (size, _) = self.socket.recv_from(&mut mem_buf)?;
 
         let duration = start.elapsed().as_micros() as f64 / 1000.0;
@@ -108,4 +143,19 @@ impl Pinger {
         );
         Ok(())
     }
+}
+
+fn signal_notify() -> std::io::Result<Receiver<i32>> {
+    let (s, r) = bounded(1);
+
+    let mut signals = signal_hook::iterator::Signals::new(&[SIGINT, SIGTERM])?;
+
+    thread::spawn(move || {
+        for signal in signals.forever() {
+            s.send(signal).unwrap();
+            break;
+        }
+    });
+
+    Ok(r)
 }
