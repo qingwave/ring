@@ -27,13 +27,14 @@ pub struct Pinger {
 
 impl Pinger {
     pub fn new(config: Config) -> std::io::Result<Self> {
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?;
+        // Type::DGRAW with ICMP only support on linux
+        let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
         let src = SocketAddr::new(net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
         let dest = SocketAddr::new(config.destination.ip, 0);
         socket.bind(&src.into())?;
         socket.set_ttl(config.ttl)?;
-        socket.set_read_timeout(Some(Duration::new(config.timeout, 0)))?;
-        socket.set_write_timeout(Some(Duration::new(config.timeout, 0)))?;
+        socket.set_read_timeout(Some(Duration::from_secs(config.timeout)))?;
+        socket.set_write_timeout(Some(Duration::from_secs(config.timeout)))?;
         Ok(Self {
             config: config,
             dest: dest,

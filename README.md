@@ -5,8 +5,14 @@ Ring is the ping but with Rust, rust + ping -> ring, implement by `pnet`, `socke
 ## Build
 
 ```bash
-cargo build
+cargo build --release
+cargo install --path .
+sudo setcap cap_net_raw=+eip $(which ring) 
 ```
+
+The `ring` need network privileges to create raw sockets.
+
+If you want use `ring` as non-root mode in linux, you need change [socket type](./src/ping.rs) from `Type::RAW` to `Type::DGRAW` 
 
 ## Usage
 

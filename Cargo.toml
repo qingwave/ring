@@ -9,7 +9,7 @@ edition = "2021"
 clap = { version = "4.0.26", features = ["derive"] }
 pnet = "0.31.0"
 rand = "0.8.5"
-socket2 = "0.4.7"
+socket2 = { version = "0.5", features = ["all"] }
 thiserror = "1.0.37"
 anyhow = "1.0"
 crossbeam-channel = "0.5.6"
